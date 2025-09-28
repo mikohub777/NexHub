@@ -1,0 +1,709 @@
+if getgenv().NexHubLoaded then return end
+getgenv().NexHubLoaded = true
+
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+-- CFG
+local CFG_FILE = "NexHubCFG.json"
+getgenv().CFG = getgenv().CFG or {
+    AirWalk=false, Float=false, FloorSteal=false, ESP=false, XRay=false, BaseTime=false, Control=false
+}
+local CFG = getgenv().CFG
+
+-- File functions
+local function canFile() return writefile and readfile and isfile end
+local function saveCFG()
+    if not canFile() then return end
+    pcall(function() writefile(CFG_FILE, HttpService:JSONEncode(CFG)) end)
+end
+local function loadCFG()
+    if not canFile() then return end
+    if not isfile(CFG_FILE) then return end
+    local ok, raw = pcall(readfile, CFG_FILE)
+    if ok and raw then
+        local ok2, dec = pcall(HttpService.JSONDecode, HttpService, raw)
+        if ok2 and type(dec)=="table" then
+            for k,v in pairs(dec) do CFG[k]=v end
+        end
+    end
+end
+loadCFG()
+task.spawn(function() while true do task.wait(10) saveCFG() end end)
+
+-- UI Helpers
+local function makeStroke(obj,color,thickness)
+    local s=Instance.new("UIStroke",obj)
+    s.Color=color or Color3.fromRGB(180,60,255)
+    s.Thickness=thickness or 1.2
+    return s
+end
+local function makeDraggable(frame,handle)
+    handle.Active=true
+    local dragging,dragStart,startPos
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+            dragging=true
+            dragStart=input.Position
+            startPos=frame.Position
+            input.Changed:Connect(function() if input.UserInputState==Enum.UserInputState.End then dragging=false end end)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch then
+            local delta=input.Position-dragStart
+            frame.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+delta.X,startPos.Y.Scale,startPos.Y.Offset+delta.Y)
+        end
+    end)
+end
+
+-- Build UI
+if game.CoreGui:FindFirstChild("NexHubCore") then pcall(function() game.CoreGui.NexHubCore:Destroy() end) end
+local screen=Instance.new("ScreenGui",game.CoreGui)
+screen.Name="NexHubCore"; screen.ResetOnSpawn=false
+
+local BG,ACC=Color3.fromRGB(25,5,40), Color3.fromRGB(180,60,255)
+local main=Instance.new("Frame",screen)
+main.Name="Main"; main.Size=UDim2.new(0,320,0,380); main.Position=UDim2.new(0.5,-160,0.08,0); main.BackgroundColor3=BG
+Instance.new("UICorner",main).CornerRadius=UDim.new(0,12)
+makeStroke(main,ACC,1.2)
+
+-- Header
+local header=Instance.new("Frame",main)
+header.Size=UDim2.new(1,0,0,40); header.Position=UDim2.new(0,0,0,0); header.BackgroundColor3=ACC
+Instance.new("UICorner",header).CornerRadius=UDim.new(0,12)
+makeStroke(header,ACC,1.2)
+local title=Instance.new("TextLabel",header)
+title.Size=UDim2.new(1,-40,1,0); title.Position=UDim2.new(0,8,0,0); title.BackgroundTransparency=1
+title.Font=Enum.Font.GothamBold; title.TextSize=18; title.TextColor3=Color3.new(1,1,1)
+title.Text="NexHub | Steal a Brainrot"; title.TextXAlignment=Enum.TextXAlignment.Left
+local hideBtn=Instance.new("TextButton",header)
+hideBtn.Size=UDim2.new(0,32,1,0); hideBtn.Position=UDim2.new(1,-36,0,0)
+hideBtn.BackgroundTransparency=1; hideBtn.Font=Enum.Font.GothamBold; hideBtn.TextSize=22; hideBtn.TextColor3=Color3.new(1,1,1)
+hideBtn.Text="—"
+
+-- Tabs
+local tabs=Instance.new("Frame",main)
+tabs.Size=UDim2.new(1,0,0,36); tabs.Position=UDim2.new(0,0,0,40); tabs.BackgroundColor3=Color3.fromRGB(40,10,60)
+Instance.new("UICorner",tabs).CornerRadius=UDim.new(0,12)
+makeStroke(tabs,ACC,1)
+
+local btnMain=Instance.new("TextButton",tabs)
+btnMain.Size=UDim2.new(0.5,0,1,0); btnMain.Position=UDim2.new(0,0,0,0); btnMain.Text="Main"; btnMain.Font=Enum.Font.GothamBold; btnMain.TextSize=15; btnMain.TextColor3=Color3.new(1,1,1); btnMain.BackgroundTransparency=1
+local btnVisual=btnMain:Clone()
+btnVisual.Parent=tabs; btnVisual.Position=UDim2.new(0.5,0,0,0); btnVisual.Text="Visual"
+
+-- Content frame
+local content=Instance.new("Frame",main)
+content.Size=UDim2.new(1,0,1,-76); content.Position=UDim2.new(0,0,0,76); content.BackgroundTransparency=1
+
+-- Panels
+local mainPanel=Instance.new("Frame",content); mainPanel.Size=UDim2.new(1,0,1,0); mainPanel.BackgroundTransparency=1
+local visualPanel=Instance.new("Frame",content); visualPanel.Size=mainPanel.Size; visualPanel.Position=mainPanel.Position; visualPanel.BackgroundTransparency=1; visualPanel.Visible=false
+
+-- Behaviours table
+local behaviours={}
+
+-- Toggle helper
+local function makeToggle(parent,label,cfgKey,posY)
+    local btn=Instance.new("TextButton",parent)
+    btn.Size=UDim2.new(0.9,0,0,32); btn.Position=UDim2.new(0.05,0,0,posY); btn.BackgroundColor3=Color3.fromRGB(55,12,80)
+    Instance.new("UICorner",btn).CornerRadius=UDim.new(0,12)
+    makeStroke(btn,ACC,1)
+    btn.Font=Enum.Font.GothamBold; btn.TextSize=14; btn.TextColor3=Color3.new(1,1,1)
+    btn.Text=label.." ["..(CFG[cfgKey] and "ON" or "OFF").."]"
+    btn.MouseButton1Click:Connect(function()
+        CFG[cfgKey]=not CFG[cfgKey]
+        btn.Text=label.." ["..(CFG[cfgKey] and "ON" or "OFF").."]"
+        saveCFG()
+        if behaviours[cfgKey] then behaviours[cfgKey](CFG[cfgKey]) end
+    end)
+    return btn
+end
+
+-- Build Main tab
+local y=8
+local openSHBtn=Instance.new("TextButton",mainPanel)
+openSHBtn.Size=UDim2.new(0.9,0,0,32); openSHBtn.Position=UDim2.new(0.05,0,0,y)
+openSHBtn.BackgroundColor3=Color3.fromRGB(60,20,100)
+Instance.new("UICorner",openSHBtn).CornerRadius=UDim.new(0,12)
+makeStroke(openSHBtn,ACC,1)
+openSHBtn.Font=Enum.Font.GothamBold; openSHBtn.TextSize=15; openSHBtn.TextColor3=Color3.new(1,1,1)
+openSHBtn.Text="Open Steal Helper"
+y=y+40
+local tAir=makeToggle(mainPanel,"Air Walk","AirWalk",y); y=y+40
+local tFloat=makeToggle(mainPanel,"Float v1","Float",y); y=y+40
+local tFloor=makeToggle(mainPanel,"Floor Steal","FloorSteal",y); y=y+40
+local tControl=makeToggle(mainPanel,"Control Player","Control",y); y=y+40
+
+-- Visual tab toggles
+local vESP=makeToggle(visualPanel,"ESP Players","ESP",12)
+local vXray=makeToggle(visualPanel,"X-Ray","XRay",56)
+local vBase=makeToggle(visualPanel,"BaseTime ESP","BaseTime",100)
+
+-- Steal Helper
+local steal=Instance.new("Frame",screen); steal.Name="StealHelper"; steal.Size=UDim2.new(0,280,0,260); steal.Position=UDim2.new(0.65,0,0.15,0)
+steal.BackgroundColor3=BG
+Instance.new("UICorner",steal).CornerRadius=UDim.new(0,12)
+makeStroke(steal,ACC,1); steal.Visible=false
+local shHeader=Instance.new("Frame",steal); shHeader.Size=UDim2.new(1,0,0,36); shHeader.Position=UDim2.new(0,0,0,0); shHeader.BackgroundColor3=ACC
+Instance.new("UICorner",shHeader).CornerRadius=UDim.new(0,12)
+local shTitle=Instance.new("TextLabel",shHeader); shTitle.Size=UDim2.new(1,-36,1,0); shTitle.Position=UDim2.new(0,8,0,0)
+shTitle.BackgroundTransparency=1; shTitle.Font=Enum.Font.GothamBold; shTitle.TextSize=15; shTitle.TextColor3=Color3.new(1,1,1)
+shTitle.Text="Steal Helper"
+local shClose=Instance.new("TextButton",shHeader); shClose.Size=UDim2.new(0,32,1,0); shClose.Position=UDim2.new(1,-36,0,0); shClose.BackgroundTransparency=1; shClose.Text="✕"; shClose.Font=Enum.Font.GothamBold; shClose.TextSize=18; shClose.TextColor3=Color3.new(1,1,1)
+local shContent=Instance.new("Frame",steal); shContent.Size=UDim2.new(1,0,1,-36); shContent.Position=UDim2.new(0,0,0,36); shContent.BackgroundTransparency=1
+local shAir=makeToggle(shContent,"Air Walk","AirWalk",8)
+local shFloat=makeToggle(shContent,"Float v1","Float",48)
+local shFloor=makeToggle(shContent,"Floor Steal","FloorSteal",88)
+
+-- Open/Close Steal Helper
+openSHBtn.MouseButton1Click:Connect(function() steal.Visible=not steal.Visible end)
+shClose.MouseButton1Click:Connect(function() steal.Visible=false end)
+
+-- Draggable
+makeDraggable(main,header)
+makeDraggable(steal,shHeader)
+
+-- Collapse menu
+local collapsed=false
+hideBtn.MouseButton1Click:Connect(function()
+    collapsed=not collapsed
+    content.Visible=not collapsed
+    tabs.Visible=not collapsed
+    main.Size=collapsed and UDim2.new(0,320,0,40) or UDim2.new(0,320,0,380)
+end)
+
+-- Tab switching
+btnMain.MouseButton1Click:Connect(function() mainPanel.Visible=true; visualPanel.Visible=false end)
+btnVisual.MouseButton1Click:Connect(function() mainPanel.Visible=false; visualPanel.Visible=true end)
+
+-- ===== Behaviours =====
+
+-- ESP (через PlayerAdded / CharacterAdded, без циклов)
+local espFolder=Instance.new("Folder",Workspace); espFolder.Name="NexHubESP"
+local function addESP(p)
+    if not CFG.ESP or p==LocalPlayer or not p.Character then return end
+    if espFolder:FindFirstChild(p.Name) then return end
+    local h=Instance.new("Highlight")
+    h.Name=p.Name
+    h.Adornee=p.Character
+    h.FillTransparency=1
+    h.OutlineTransparency=0
+    h.OutlineColor=ACC
+    h.Parent=espFolder
+end
+local function clearESP() espFolder:ClearAllChildren() end
+Players.PlayerAdded:Connect(function(p) p.CharacterAdded:Connect(function() addESP(p) end) end)
+Players.PlayerRemoving:Connect(function(p) if espFolder:FindFirstChild(p.Name) then espFolder[p.Name]:Destroy() end end)
+behaviours.ESP=function(enabled)
+    clearESP()
+    if enabled then for _,p in ipairs(Players:GetPlayers()) do addESP(p) end end
+end
+
+-- AirWalk
+local airPlatform,airConn
+behaviours.AirWalk=function(enabled)
+    if enabled then
+        if not airPlatform then
+            airPlatform=Instance.new("Part",Workspace)
+            airPlatform.Name="Nex_AirPlatform"; airPlatform.Size=Vector3.new(6,0.8,6)
+            airPlatform.Anchored=true; airPlatform.CanCollide=true; airPlatform.Material=Enum.Material.Plastic; airPlatform.Color=ACC; airPlatform.Transparency=0.12
+        end
+        if airConn then airConn:Disconnect() end
+        airConn=RunService.RenderStepped:Connect(function()
+            local hrp=LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then airPlatform.Position=hrp.Position-Vector3.new(0,3.6,0) end
+        end)
+    else
+        if airConn then airConn:Disconnect(); airConn=nil end
+        if airPlatform then airPlatform:Destroy() airPlatform=nil end
+    end
+end
+
+-- Float
+local floatConn
+behaviours.Float=function(enabled)
+    if enabled then
+        if floatConn then floatConn:Disconnect() end
+        floatConn=RunService.RenderStepped:Connect(function()
+            local hrp=LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then hrp.Velocity=Vector3.new(hrp.Velocity.X,-1.6,hrp.Velocity.Z) end
+        end)
+    else if floatConn then floatConn:Disconnect() floatConn=nil end end
+end
+
+-- Floor Steal
+local floorPlatform,floorConn
+behaviours.FloorSteal=function(enabled)
+    if enabled then
+        if not floorPlatform then
+            floorPlatform=Instance.new("Part",Workspace)
+            floorPlatform.Name="Nex_FloorPlatform"; floorPlatform.Size=Vector3.new(6,0.8,6)
+            floorPlatform.Anchored=true; floorPlatform.CanCollide=true; floorPlatform.Material=Enum.Material.Plastic; floorPlatform.Color=ACC; floorPlatform.Transparency=0.12
+        end
+        if floorConn then floorConn:Disconnect() end
+        floorConn=RunService.RenderStepped:Connect(function()
+            local hrp=LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then floorPlatform.Position=hrp.Position-Vector3.new(0,3,0) end
+        end)
+    else
+        if floorConn then floorConn:Disconnect() floorConn=nil end
+        if floorPlatform then floorPlatform:Destroy() floorPlatform=nil end
+    end
+end
+
+-- XRay (только на включение/выключение, без постоянных циклов)
+behaviours.XRay=function(enabled)
+    for _,obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and not obj:IsDescendantOf(LocalPlayer.Character) then
+            pcall(function() obj.LocalTransparencyModifier=enabled and 0.7 or 0 end)
+        end
+    end
+end
+Workspace.DescendantAdded:Connect(function(obj)
+    if CFG.XRay and obj:IsA("BasePart") and not obj:IsDescendantOf(LocalPlayer.Character) then
+        pcall(function() obj.LocalTransparencyModifier=0.7 end)
+    end
+end)
+
+-- BaseTime ESP (обновление через события)
+local baseESPFolder=Instance.new("Folder",Workspace); baseESPFolder.Name="NexHubBaseESP"
+local function addTimer(plot)
+    local rem = plot:FindFirstChild("Purchases")
+        and plot.Purchases:FindFirstChild("PlotBlock")
+        and plot.Purchases.PlotBlock:FindFirstChild("Main")
+        and plot.Purchases.PlotBlock.Main:FindFirstChild("BillboardGui")
+        and plot.Purchases.PlotBlock.Main.BillboardGui:FindFirstChild("RemainingTime")
+    if rem and rem:IsA("TextLabel") then
+        local bb = Instance.new("BillboardGui", baseESPFolder)
+        bb.Adornee = plot.Purchases.PlotBlock.Main
+        bb.Size = UDim2.new(0,200,0,50)
+        bb.AlwaysOnTop = true
+        bb.StudsOffset = Vector3.new(0,5,0)
+
+        local txt = Instance.new("TextLabel", bb)
+        txt.Size = UDim2.new(1,0,1,0)
+        txt.BackgroundTransparency = 1
+        txt.Font = Enum.Font.GothamBold
+        txt.TextColor3 = Color3.new(1,1,1)
+        txt.TextStrokeTransparency = 0
+        txt.TextScaled = true
+
+        rem:GetPropertyChangedSignal("Text"):Connect(function()
+            txt.Text = rem.Text
+        end)
+        txt.Text = rem.Text
+    end
+end
+behaviours.BaseTime=function(enabled)
+    baseESPFolder:ClearAllChildren()
+    if not enabled then return end
+    for _,plot in pairs(Workspace.Plots:GetChildren()) do addTimer(plot) end
+end
+Workspace.Plots.ChildAdded:Connect(function(plot) if CFG.BaseTime then task.wait(1) addTimer(plot) end end)
+
+-- Control Player Function
+local originalCharacter = nil
+local originalCameraSettings = {}
+local isControlling = false
+local countdownCoroutine = nil
+local currentTools = {}
+local originalHumanoidState = nil
+local webSlingerTool = nil
+local controlTime = 10
+
+local function stopCharacterMovement(character)
+    if not character then return end
+    local humanoid = character:FindFirstChild('Humanoid')
+    local humanoidRootPart = character:FindFirstChild('HumanoidRootPart')
+    if not humanoid or not humanoidRootPart then return end
+
+    humanoid:MoveTo(humanoidRootPart.Position)
+    originalHumanoidState = {
+        MoveDirection = humanoid.MoveDirection,
+        WalkSpeed = humanoid.WalkSpeed,
+    }
+    humanoid.WalkSpeed = 0
+end
+
+local function restoreCharacterMovement(character)
+    if not character or not originalHumanoidState then return end
+    local humanoid = character:FindFirstChild('Humanoid')
+    if not humanoid then return end
+    humanoid.WalkSpeed = originalHumanoidState.WalkSpeed
+    originalHumanoidState = nil
+end
+
+local function modifyWebRopes()
+    local workspaceObjects = workspace:GetDescendants()
+    local modifiedCount = 0
+    for _, object in ipairs(workspaceObjects) do
+        if object:IsA('RopeConstraint') and object.Name:lower():find('web') then
+            object.Length = 950
+            modifiedCount = modifiedCount + 1
+        end
+    end
+    return modifiedCount
+end
+
+local function saveCurrentTools()
+    local character = LocalPlayer.Character
+    if not character then return end
+    currentTools = {}
+    for _, tool in ipairs(character:GetChildren()) do
+        if tool:IsA('Tool') then
+            table.insert(currentTools, tool:Clone())
+        end
+    end
+end
+
+local function restoreTools()
+    local character = LocalPlayer.Character
+    if not character then return end
+
+    if webSlingerTool and webSlingerTool.Parent == character then
+        webSlingerTool.Parent = LocalPlayer.Backpack
+    end
+
+    for _, tool in ipairs(character:GetChildren()) do
+        if tool:IsA('Tool') then
+            tool.Parent = LocalPlayer.Backpack
+        end
+    end
+
+    for _, tool in ipairs(currentTools) do
+        if tool and tool.Parent then
+            local newTool = tool:Clone()
+            newTool.Parent = character
+        end
+    end
+
+    currentTools = {}
+    webSlingerTool = nil
+end
+
+local function takeWebSlinger()
+    local character = LocalPlayer.Character
+    local backpack = LocalPlayer:FindFirstChild('Backpack')
+    if not backpack or not character then return false end
+
+    saveCurrentTools()
+
+    for _, tool in ipairs(character:GetChildren()) do
+        if tool:IsA('Tool') then
+            tool.Parent = backpack
+        end
+    end
+
+    webSlingerTool = nil
+    for _, tool in ipairs(backpack:GetChildren()) do
+        if tool:IsA('Tool') and (
+            tool.Name:lower():find('web') or
+            tool.Name:lower():find('slinger') or
+            tool.Name:lower():find('shooter') or
+            tool.Name:lower():find('swing')
+        ) then
+            webSlingerTool = tool
+            break
+        end
+    end
+
+    if not webSlingerTool then
+        restoreTools()
+        return false
+    end
+
+    webSlingerTool.Parent = character
+    local humanoid = character:FindFirstChild('Humanoid')
+    if humanoid then
+        humanoid:EquipTool(webSlingerTool)
+        return true
+    end
+    return false
+end
+
+local function findNearestPlayerInRange()
+    local localCharacter = LocalPlayer.Character
+    if not localCharacter then return nil end
+    local localRoot = localCharacter:FindFirstChild('HumanoidRootPart')
+    if not localRoot then return nil end
+
+    local nearestPlayer = nil
+    local shortestDistance = math.huge
+    local maxDistance = 20
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local character = player.Character
+            local humanoidRootPart = character:FindFirstChild('HumanoidRootPart')
+            if humanoidRootPart then
+                local distance = (localRoot.Position - humanoidRootPart.Position).Magnitude
+                if distance < shortestDistance and distance <= maxDistance then
+                    shortestDistance = distance
+                    nearestPlayer = player
+                end
+            end
+        end
+    end
+    return nearestPlayer
+end
+
+local function findShotPlayer()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local character = player.Character
+            local humanoid = character:FindFirstChild('Humanoid')
+            if humanoid and humanoid.PlatformStand then
+                return player
+            end
+        end
+    end
+    return nil
+end
+
+local function disablePlatformStand(targetPlayer)
+    if targetPlayer and targetPlayer.Character then
+        local humanoid = targetPlayer.Character:FindFirstChild('Humanoid')
+        if humanoid then
+            humanoid.PlatformStand = false
+        end
+    end
+end
+
+local function swapCharacter(targetPlayer)
+    originalCharacter = LocalPlayer.Character
+    originalCameraSettings = {
+        CameraType = workspace.CurrentCamera.CameraType,
+        CameraSubject = workspace.CurrentCamera.CameraSubject,
+    }
+
+    stopCharacterMovement(originalCharacter)
+    disablePlatformStand(targetPlayer)
+    LocalPlayer.Character = targetPlayer.Character
+
+    task.wait(0.5)
+
+    workspace.CurrentCamera.CameraType = originalCameraSettings.CameraType
+    if targetPlayer.Character:FindFirstChild('Humanoid') then
+        workspace.CurrentCamera.CameraSubject = targetPlayer.Character.Humanoid
+    end
+
+    spawn(function() modifyWebRopes() end)
+end
+
+local function returnToOriginalCharacter()
+    if not originalCharacter then return end
+    LocalPlayer.Character = originalCharacter
+    restoreCharacterMovement(originalCharacter)
+    workspace.CurrentCamera.CameraType = originalCameraSettings.CameraType
+    if originalCharacter:FindFirstChild('Humanoid') then
+        workspace.CurrentCamera.CameraSubject = originalCharacter.Humanoid
+    end
+    restoreTools()
+    originalCharacter = nil
+    originalCameraSettings = {}
+    isControlling = false
+end
+
+local function stopCountdown()
+    if countdownCoroutine then
+        coroutine.close(countdownCoroutine)
+        countdownCoroutine = nil
+    end
+end
+
+local controlButton = nil
+local controlGui = nil
+
+behaviours.Control = function(enabled)
+    if enabled then
+        if controlGui then controlGui:Destroy() end
+        
+        controlGui = Instance.new('ScreenGui')
+        controlGui.Name = 'NexHubControl'
+        controlGui.Parent = game.CoreGui
+        controlGui.ResetOnSpawn = false
+
+        local mainColor = Color3.fromRGB(25, 25, 25)
+        local textColor = Color3.fromRGB(255, 255, 255)
+        local borderColor = Color3.fromRGB(50, 50, 50)
+
+        controlButton = Instance.new('TextButton')
+        controlButton.Size = UDim2.new(0, 150, 0, 40)
+        controlButton.Position = UDim2.new(0, 10, 0, 10)
+        controlButton.BackgroundColor3 = mainColor
+        controlButton.BorderSizePixel = 0
+        controlButton.Text = 'CONTROL PLAYER (F)'
+        controlButton.TextColor3 = textColor
+        controlButton.Font = Enum.Font.Code
+        controlButton.TextSize = 14
+        controlButton.Parent = controlGui
+
+        local controlButtonCorner = Instance.new('UICorner')
+        controlButtonCorner.CornerRadius = UDim.new(0, 6)
+        controlButtonCorner.Parent = controlButton
+
+        local controlButtonStroke = Instance.new('UIStroke')
+        controlButtonStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        controlButtonStroke.Color = borderColor
+        controlButtonStroke.Thickness = 2
+        controlButtonStroke.LineJoinMode = Enum.LineJoinMode.Round
+        controlButtonStroke.Parent = controlButton
+
+        -- Dragging functionality
+        local dragging = false
+        local dragStart, startPos
+        local function update(input)
+            if not dragging then return end
+            local delta = input.Position - dragStart
+            local newX = startPos.X.Offset + delta.X
+            local newY = startPos.Y.Offset + delta.Y
+            newX = math.clamp(newX, 0, controlGui.AbsoluteSize.X - controlButton.AbsoluteSize.X)
+            newY = math.clamp(newY, 0, controlGui.AbsoluteSize.Y - controlButton.AbsoluteSize.Y)
+            controlButton.Position = UDim2.new(0, newX, 0, newY)
+        end
+
+        controlButton.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
+                dragStart = input.Position
+                startPos = controlButton.Position
+            end
+        end)
+
+        controlButton.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = false
+            end
+        end)
+
+        UserInputService.InputChanged:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseMovement and dragging then
+                update(input)
+            end
+        end)
+
+        -- Control function
+        local function controlPlayer()
+            if isControlling then
+                stopCountdown()
+                returnToOriginalCharacter()
+                controlButton.Text = 'CONTROL PLAYER (F)'
+                controlButton.TextColor3 = textColor
+                controlButtonStroke.Color = borderColor
+            else
+                controlButton.Text = 'Taking Web...'
+                if not takeWebSlinger() then
+                    controlButton.Text = 'No Web Slinger found!'
+                    task.wait(1)
+                    controlButton.Text = 'CONTROL PLAYER (F)'
+                    return
+                end
+
+                controlButton.Text = 'Finding target...'
+                local nearestPlayer = findNearestPlayerInRange()
+
+                if nearestPlayer and nearestPlayer.Character then
+                    local targetRoot = nearestPlayer.Character:FindFirstChild('HumanoidRootPart')
+                    if targetRoot then
+                        controlButton.Text = 'Shooting...'
+                        local Event = ReplicatedStorage.Packages.Net['RE/UseItem']
+                        Event:FireServer(
+                            Vector3.new(-450.30258178711, -7.0001068115234, 1.8120102882385),
+                            targetRoot
+                        )
+
+                        controlButton.Text = 'Checking hit...'
+                        task.wait(1)
+                        local shotPlayer = findShotPlayer()
+
+                        if shotPlayer then
+                            swapCharacter(shotPlayer)
+                            isControlling = true
+                            controlButton.Text = 'CANCEL (' .. controlTime .. 's)'
+                            controlButton.TextColor3 = Color3.fromRGB(255, 100, 100)
+                            controlButtonStroke.Color = Color3.fromRGB(255, 100, 100)
+
+                            local timer = controlTime
+                            countdownCoroutine = coroutine.create(function()
+                                while timer > 0 and isControlling do
+                                    task.wait(1)
+                                    timer = timer - 1
+                                    controlButton.Text = 'CANCEL (' .. timer .. 's)'
+                                end
+                                if isControlling then
+                                    returnToOriginalCharacter()
+                                    controlButton.Text = 'CONTROL PLAYER (F)'
+                                    controlButton.TextColor3 = textColor
+                                    controlButtonStroke.Color = borderColor
+                                    isControlling = false
+                                end
+                            end)
+                            coroutine.resume(countdownCoroutine)
+                        else
+                            restoreTools()
+                            controlButton.Text = 'Missed! Try again'
+                            task.wait(1)
+                            controlButton.Text = 'CONTROL PLAYER (F)'
+                        end
+                    else
+                        restoreTools()
+                        controlButton.Text = 'Target has no root part'
+                        task.wait(1)
+                        controlButton.Text = 'CONTROL PLAYER (F)'
+                    end
+                else
+                    restoreTools()
+                    controlButton.Text = 'No player in range'
+                    task.wait(1)
+                    controlButton.Text = 'CONTROL PLAYER (F)'
+                end
+            end
+        end
+
+        controlButton.MouseButton1Click:Connect(controlPlayer)
+        UserInputService.InputBegan:Connect(function(input, gameProcessed)
+            if gameProcessed then return end
+            if input.KeyCode == Enum.KeyCode.F then
+                controlPlayer()
+            end
+        end)
+
+        LocalPlayer.CharacterRemoving:Connect(function()
+            if isControlling then
+                returnToOriginalCharacter()
+            else
+                restoreTools()
+            end
+        end)
+
+        controlGui.Destroying:Connect(function()
+            if isControlling then
+                returnToOriginalCharacter()
+            else
+                restoreTools()
+            end
+        end)
+
+    else
+        if controlGui then
+            controlGui:Destroy()
+            controlGui = nil
+        end
+        if isControlling then
+            returnToOriginalCharacter()
+        end
+    end
+end
+
+-- Apply on startup
+for k,v in pairs(CFG) do if behaviours[k] then behaviours[k](v) end end
